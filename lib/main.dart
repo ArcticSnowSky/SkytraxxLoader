@@ -217,6 +217,8 @@ class _SkytraxxLoaderState extends State<SkytraxxLoader> {
             );
           } catch (e) {
             throw Exception('Failed to send data: $e');
+          } finally {
+            Navigator.of(context).pop();
           }
         }
       } else {
@@ -224,7 +226,7 @@ class _SkytraxxLoaderState extends State<SkytraxxLoader> {
       }
     } catch (err) {
       onError(err);
-      _bleCharacteristic = null;
+      //_bleCharacteristic = null;
     }
 
 
@@ -406,6 +408,19 @@ class BlueLoader {
     final mtu = characteristic.device.mtuNow -5;  // 3 Byte BLE overhead
     ValueNotifier valueNotifier = ValueNotifier(0.0);
     return (valueNotifier, () async {
+      if (!await characteristic.setNotifyValue(true, timeout: 5)) {
+        throw Exception("Cannot set Notification on Characteristic");
+      }
+      final completer = Completer<bool>();
+      characteristic.onValueReceived.listen((value) {
+        final response = utf8.decode(value);
+        if (response.contains("#OK")) {
+          completer.complete(true);
+        }
+        else if (response.contains("#ERROR")) {
+          completer.completeError(Exception("#ERROR Received: $response"));
+        }
+       });
       // Sende Text in Stücken zu 512 Byte
       for (var i = 0; i < data.length; i += mtu) {
         if (i > 0) await Future.delayed(const Duration(milliseconds: 200));
@@ -414,13 +429,15 @@ class BlueLoader {
         print("ChunkLength: ${chunk.length}");
         await characteristic.write(utf8.encode(chunk));
         valueNotifier.value = i / data.length;
-        if (i+mtu >= data.length) {
-          // check if Characteristic contains #OK
-          final responseData = utf8.decode(await characteristic.read());
-          return responseData.contains("#OK");
-        }
       }
-      return false;
+      try {
+        await completer.future.timeout(const Duration(seconds: 5));
+      } on TimeoutException catch (timeout_e) {
+        completer.completeError(timeout_e);
+      } finally {
+        characteristic.setNotifyValue(false);
+      }
+      return completer.future;
     }());
   }
 }
